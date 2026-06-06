@@ -1,0 +1,9 @@
+version: "3.9"
+services:
+  collector:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./auth:/app/auth   # 挂载登录态（本机预先登录，云端复用）
+    restart: "no"

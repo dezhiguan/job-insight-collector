@@ -1,0 +1,16 @@
+[project]
+name = "job-insight-collector"
+version = "0.1.0"
+requires-python = ">=3.10"
+description = "职位洞察数据采集工具 —— 浏览器自动化技术演示"
+license = {text = "MIT"}
+dependencies = [
+    "playwright>=1.40.0",
+    "pyyaml>=6.0.1",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.27.0",
+    "apscheduler>=3.10.0",
+]
+
+[project.scripts]
+job-insight-collector = "cli:main"

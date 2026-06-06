@@ -1,0 +1,24 @@
+.env
+auth/
+data/
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+failed_ids.txt
+
+# 登录态和 Chrome Profile（含个人数据，绝不提交）
+auth/chrome-profile/
+auth/cdp-profile/
+auth/storage_state.json
+auth/*.json
+
+# 采集数据（不提交到仓库）
+data/
+*.jsonl
+*.csv
+
+# 环境变量
+.env
