@@ -11,7 +11,13 @@ from urllib.parse import parse_qs, urlparse
 from playwright.sync_api import BrowserContext, Page, Response, sync_playwright
 
 from src.auth import is_logged_in, verify_login
-from src.browser import CDP_PORT, connect_cdp, is_cdp_up, launch_persistent
+from src.browser import (
+    CDP_PORT,
+    connect_cdp,
+    is_cdp_up,
+    launch_persistent,
+    launch_with_storage_state,
+)
 from src.config import Settings
 from src.exporter import JobExporter
 from src.scrapers.boss.parser import (
@@ -59,14 +65,14 @@ class JobScraper:
     def _ensure_login(self) -> None:
         from src.browser import USER_DATA_DIR
 
-        if not USER_DATA_DIR.exists() and not self.settings.storage_state_path.exists():
+        has_profile = USER_DATA_DIR.exists()
+        has_storage_state = self.settings.storage_state_path.exists()
+        if not has_profile and not has_storage_state:
             raise FileNotFoundError(
                 "未找到登录态，请先运行: ./run.sh login"
             )
-        if not verify_login(headless=True):
-            raise RuntimeError(
-                "登录态已失效，请重新运行: ./run.sh login"
-            )
+        # 不在这里启动浏览器验证（会触发额外的反爬检测）；
+        # 登录态失效时 scrape 过程中自然会触发 RuntimeError。
 
     def _attach_list_listener(self, page: Page) -> None:
         def on_response(response: Response) -> None:
@@ -144,7 +150,11 @@ class JobScraper:
                 if captured is not None:
                     return
                 url = response.url
-                if "job/detail.json" not in url and "job/detail" not in url:
+                if (
+                    "job/detail.json" not in url
+                    and "jobdetail" not in url.lower()
+                    and "jobDetail" not in url
+                ):
                     return
                 parsed = urlparse(url)
                 qs = parse_qs(parsed.query)
@@ -177,7 +187,7 @@ class JobScraper:
 
         return detail_payload
 
-    def scrape(self, *, require_login: bool = True) -> Path:
+    def scrape(self, *, require_login: bool = True, max_jobs: int | None = None) -> Path:
         self.require_login = require_login
         if require_login:
             self._ensure_login()
@@ -185,18 +195,31 @@ class JobScraper:
         self.settings.data_dir.mkdir(parents=True, exist_ok=True)
 
         use_cdp = is_cdp_up(CDP_PORT)
+        use_storage_state = (
+            not use_cdp
+            and self.settings.storage_state_path.exists()
+        )
         with sync_playwright() as p:
             if use_cdp:
                 print("连接本机 Chrome（CDP 模式）进行采集…")
                 browser, context = connect_cdp(p, CDP_PORT)
+            elif use_storage_state:
+                mode = "云端无头" if self.settings.headless else "本地有头(storage_state)"
+                print(f"{mode} 模式采集…")
+                browser, context = launch_with_storage_state(
+                    p, self.settings.storage_state_path,
+                    headless=self.settings.headless,
+                )
             else:
                 print("使用持久化内置浏览器进行采集…")
                 browser = None
                 context = launch_persistent(p, headless=self.settings.headless)
 
-            list_page = context.pages[0] if context.pages else context.new_page()
+            list_page = context.new_page()
             self._attach_list_listener(list_page)
             items = self._collect_list_pages(list_page)
+            if max_jobs is not None:
+                items = items[:max_jobs]
 
             print(f"列表共发现 {len(items)} 个职位，开始抓取详情…")
 

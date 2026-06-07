@@ -21,3 +21,16 @@ niuke:
   delay_ms: 3000         # 牛客延迟建议比 Boss 高，用 3s
   interview_company_ids: []   # 留空=不过滤公司，填入数字 ID 列表可精确抓取
   headless: false
+
+ragforge:
+  jd_kb_id: 1          # KB-2 JD Pattern KB（Boss直聘 JD）
+  interview_kb_id: 2   # KB-4 Interview Q&A KB（牛客面经）
+  salary_kb_id: 3      # KB-5 Salary Reference KB（牛客薪资）
+  github_kb_id: 4      # KB-3 Company Tech Intel KB（GitHub 仓库）
+
+github:
+  orgs: []                  # 留空=不执行，填 org 名列表才抓取
+  min_stars: 500
+  max_repos_per_org: 10
+  delay_ms: 1000            # 两次 API 请求间隔
+  readme_max_chars: 2000    # README 截断长度

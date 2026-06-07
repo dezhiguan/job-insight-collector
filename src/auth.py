@@ -15,6 +15,7 @@ from src.browser import (
     is_cdp_up,
     launch_persistent,
     launch_user_chrome,
+    launch_with_storage_state,
 )
 
 LOGIN_CHECK_TIMEOUT_MS = 600_000  # 10 min for manual login
@@ -168,15 +169,39 @@ def interactive_login(storage_state_path: Path, *, headless: bool = False) -> Pa
 def verify_login(*, headless: bool = True) -> bool:
     """Check login by attaching to the running Chrome (CDP), else persistent."""
     if is_cdp_up(CDP_PORT):
+        try:
+            with sync_playwright() as p:
+                browser, context = connect_cdp(p, CDP_PORT)
+                page = _ensure_boss_page(context)
+                try:
+                    page.reload(wait_until="domcontentloaded", timeout=30_000)
+                    page.wait_for_timeout(1500)
+                except Exception:
+                    pass
+                ok = is_logged_in(page)
+                browser.close()
+            return ok
+        except Exception:
+            pass  # CDP unavailable, fall through to storage_state / persistent
+
+    from src.config import load_settings
+    from src.browser import USER_DATA_DIR
+
+    settings = load_settings()
+    # storage_state.json 存在时优先用它验证（更可靠），
+    # 省去依赖 persistent profile 是否有效登录
+    if settings.storage_state_path.exists():
         with sync_playwright() as p:
-            browser, context = connect_cdp(p, CDP_PORT)
-            page = _ensure_boss_page(context)
+            browser, context = launch_with_storage_state(
+                p, settings.storage_state_path
+            )
+            page = context.pages[0] if context.pages else context.new_page()
             try:
-                page.reload(wait_until="domcontentloaded", timeout=30_000)
-                page.wait_for_timeout(1500)
+                page.goto(HOME_URL, wait_until="domcontentloaded", timeout=60_000)
+                page.wait_for_timeout(2000)
+                ok = is_logged_in(page)
             except Exception:
-                pass
-            ok = is_logged_in(page)
+                ok = False
             browser.close()
         return ok
 

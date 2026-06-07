@@ -1,14 +1,27 @@
 from __future__ import annotations
 
 import argparse
+import json
+import os
 import sys
 from datetime import date
 from pathlib import Path
 
+import httpx
+import yaml
+
 from src.auth import interactive_login, verify_login
 from src.config import load_settings
 from src.exporter import JobExporter
+from src.pipeline.chunk_builder import (
+    build_boss_jd,
+    build_github_repo,
+    build_niuke_interview,
+    build_niuke_salary,
+)
+from src.pipeline.ragforge_client import RagForgeClient
 from src.scrapers.boss.scraper import JobScraper
+from src.scrapers.github.repo_scraper import GitHubScraper
 from src.scrapers.niuke.auth import (
     interactive_niuke_login,
     load_niuke_config,
@@ -16,6 +29,22 @@ from src.scrapers.niuke.auth import (
 )
 from src.scrapers.niuke.interview_scraper import NiukeInterviewScraper
 from src.scrapers.niuke.salary_scraper import NiukeSalaryScraper
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+
+PUSH_BUILDERS = {
+    "boss": build_boss_jd,
+    "niuke-interview": build_niuke_interview,
+    "niuke-salary": build_niuke_salary,
+    "github": build_github_repo,
+}
+
+PUSH_KB_CONFIG = {
+    "boss": ("RAGFORGE_JD_KB_ID", "jd_kb_id"),
+    "niuke-interview": ("RAGFORGE_INTERVIEW_KB_ID", "interview_kb_id"),
+    "niuke-salary": ("RAGFORGE_SALARY_KB_ID", "salary_kb_id"),
+    "github": ("RAGFORGE_GITHUB_KB_ID", "github_kb_id"),
+}
 
 
 def cmd_login(args: argparse.Namespace) -> int:
@@ -49,11 +78,11 @@ def cmd_scrape(args: argparse.Namespace) -> int:
         city=args.city,
         max_pages=args.max_pages,
         delay_ms=args.delay_ms,
-        headless=args.headless,
+        headless=args.headless or None,  # False → None，让 env var HEADLESS 生效
     )
     scraper = JobScraper(settings)
     try:
-        scraper.scrape(require_login=not args.no_login)
+        scraper.scrape(require_login=not args.no_login, max_jobs=args.max_jobs)
     except (FileNotFoundError, RuntimeError) as e:
         print(f"错误: {e}", file=sys.stderr)
         return 1
@@ -171,6 +200,179 @@ def cmd_niuke_salary(args: argparse.Namespace) -> int:
     return 0
 
 
+def _load_ragforge_yaml() -> dict:
+    config_path = PROJECT_ROOT / "config.yaml"
+    if not config_path.exists():
+        return {}
+    with config_path.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    ragforge = cfg.get("ragforge")
+    return ragforge if isinstance(ragforge, dict) else {}
+
+
+def _load_github_yaml() -> dict:
+    config_path = PROJECT_ROOT / "config.yaml"
+    if not config_path.exists():
+        return {}
+    with config_path.open(encoding="utf-8") as f:
+        cfg = yaml.safe_load(f) or {}
+    github = cfg.get("github")
+    return github if isinstance(github, dict) else {}
+
+
+def _resolve_kb_id(source: str) -> int:
+    env_name, cfg_key = PUSH_KB_CONFIG[source]
+    ragforge_cfg = _load_ragforge_yaml()
+    raw = os.getenv(env_name)
+    if raw is not None and str(raw).strip():
+        return int(raw)
+    return int(ragforge_cfg.get(cfg_key, 1))
+
+
+def _iter_jsonl_records(path: Path):
+    with path.open(encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                yield json.loads(line)
+            except json.JSONDecodeError:
+                continue
+
+
+def _extract_document_id(response: dict) -> int | None:
+    for key in ("documentId", "document_id", "id"):
+        value = response.get(key)
+        if value is not None:
+            return int(value)
+    data = response.get("data")
+    if isinstance(data, dict):
+        for key in ("documentId", "document_id", "id"):
+            value = data.get(key)
+            if value is not None:
+                return int(value)
+    return None
+
+
+def _response_exists(response: dict) -> bool:
+    if response.get("exists") is True:
+        return True
+    data = response.get("data")
+    if isinstance(data, dict) and data.get("exists") is True:
+        return True
+    return False
+
+
+def cmd_push(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    if not settings.ragforge_enabled or not settings.ragforge_url.strip():
+        print("RAGForge 推送未启用，跳过上传")
+        return 0
+
+    jsonl_path = Path(args.file)
+    if not jsonl_path.is_file():
+        print(f"错误: 文件不存在: {jsonl_path}", file=sys.stderr)
+        return 1
+
+    builder = PUSH_BUILDERS[args.source]
+    kb_id = _resolve_kb_id(args.source)
+    client = RagForgeClient(
+        settings.ragforge_url,
+        settings.ragforge_api_key,
+    )
+
+    records = list(_iter_jsonl_records(jsonl_path))
+    total = len(records)
+    if total == 0:
+        print("没有可推送的记录。", file=sys.stderr)
+        return 1
+
+    success = 0
+    skipped = 0
+    failed = 0
+
+    for idx, record in enumerate(records, start=1):
+        filename, markdown = builder(record)
+        try:
+            response = client.upload_text(kb_id, filename, markdown)
+        except httpx.HTTPError as e:
+            failed += 1
+            print(f"[{idx}/{total}] {filename} → 失败: {e}", file=sys.stderr)
+            continue
+
+        if _response_exists(response):
+            skipped += 1
+            print(f"[{idx}/{total}] {filename} → 已存在，跳过")
+            continue
+
+        doc_id = _extract_document_id(response)
+        status = response.get("parseStatus") or response.get("status") or "processing"
+        if isinstance(response.get("data"), dict):
+            status = response["data"].get("parseStatus", status)
+
+        if doc_id is None:
+            success += 1
+            print(f"[{idx}/{total}] {filename} → 上传成功 ({status})")
+            continue
+
+        if args.wait:
+            status = client.wait_for_completion(doc_id)
+
+        success += 1
+        print(f"[{idx}/{total}] {filename} → document_id={doc_id} ({status})")
+
+    print(f"汇总: 成功 {success} 条，跳过（已存在）{skipped} 条，失败 {failed} 条")
+    return 0 if failed == 0 else 1
+
+
+def cmd_github(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    github_cfg = _load_github_yaml()
+
+    max_repos = (
+        args.max_repos
+        if args.max_repos is not None
+        else int(github_cfg.get("max_repos_per_org", 10))
+    )
+    min_stars = (
+        args.min_stars
+        if args.min_stars is not None
+        else int(github_cfg.get("min_stars", 500))
+    )
+    output_dir = Path(args.output or "data/github/")
+    delay_ms = int(github_cfg.get("delay_ms", 1000))
+    readme_max_chars = int(github_cfg.get("readme_max_chars", 2000))
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    scraper = GitHubScraper(
+        token=settings.github_token,
+        delay_ms=delay_ms,
+    )
+
+    try:
+        for org in args.orgs:
+            print(f"抓取 GitHub org: {org} …")
+            records = scraper.scrape_org(
+                org,
+                min_stars=min_stars,
+                max_repos=max_repos,
+                readme_max_chars=readme_max_chars,
+            )
+            out_path = output_dir / f"{org}_repos.jsonl"
+            with out_path.open("w", encoding="utf-8") as f:
+                for record in records:
+                    f.write(json.dumps(record, ensure_ascii=False) + "\n")
+            print(f"  写入 {len(records)} 条 -> {out_path}")
+    except httpx.HTTPError as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 1
+    finally:
+        scraper.close()
+
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="job-insight-collector",
@@ -198,6 +400,12 @@ def main(argv: list[str] | None = None) -> int:
         "--no-login",
         action="store_true",
         help="不登录直接爬公开列表（详情可能不完整）",
+    )
+    p_scrape.add_argument(
+        "--max-jobs",
+        type=int,
+        default=None,
+        help="最多抓取职位数（用于快速验证）",
     )
     p_scrape.set_defaults(func=cmd_scrape)
 
@@ -235,6 +443,51 @@ def main(argv: list[str] | None = None) -> int:
         help="无头模式",
     )
     p_niuke_salary.set_defaults(func=cmd_niuke_salary)
+
+    p_push = sub.add_parser("push", help="推送本地 JSONL 到 RAGForge")
+    p_push.add_argument(
+        "--source",
+        required=True,
+        choices=["boss", "niuke-interview", "niuke-salary", "github"],
+        help="数据来源类型",
+    )
+    p_push.add_argument(
+        "--file",
+        required=True,
+        help="JSONL 文件路径",
+    )
+    p_push.add_argument(
+        "--wait",
+        action="store_true",
+        help="推送后等待每条记录处理完成",
+    )
+    p_push.set_defaults(func=cmd_push)
+
+    p_github = sub.add_parser("github", help="抓取 GitHub org 公开仓库信息")
+    p_github.add_argument(
+        "--orgs",
+        nargs="+",
+        required=True,
+        help="一个或多个 GitHub org 名",
+    )
+    p_github.add_argument(
+        "--max-repos",
+        type=int,
+        default=None,
+        help="每个 org 最多抓取仓库数（默认读 config.yaml github.max_repos_per_org）",
+    )
+    p_github.add_argument(
+        "--min-stars",
+        type=int,
+        default=None,
+        help="最低 star 数（默认读 config.yaml github.min_stars）",
+    )
+    p_github.add_argument(
+        "--output",
+        default="data/github/",
+        help="输出目录，默认 data/github/",
+    )
+    p_github.set_defaults(func=cmd_github)
 
     p_export = sub.add_parser("export", help="导出数据")
     p_export.add_argument(

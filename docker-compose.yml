@@ -1,9 +1,13 @@
 version: "3.9"
 services:
-  collector:
+  boss-scraper:
     build: .
     env_file: .env
+    environment:
+      - HEADLESS=true
     volumes:
-      - ./data:/app/data
-      - ./auth:/app/auth   # 挂载登录态（本机预先登录，云端复用）
+      - ./auth:/app/auth:ro      # 本地 login 后 scp 上传，只读挂载
+      - ./data:/app/data          # 采集输出，读写
+      - ./logs:/app/logs          # 日志目录
+    command: ["scrape", "--max-pages", "3"]
     restart: "no"

@@ -38,6 +38,7 @@ COMMON_ARGS = [
     "--no-first-run",
     "--no-default-browser-check",
     "--disable-infobars",
+    "--disk-cache-size=0",  # 禁用磁盘 cache，保证每次请求走网络，response listener 能捞到
 ]
 HEADED_ARGS = ["--start-maximized"]
 # Headless bundled Chromium can SIGSEGV with swiftshader; keep it minimal + GPU off.
@@ -173,5 +174,50 @@ def launch_persistent(
     raise RuntimeError(
         "无法启动浏览器，请安装 Google Chrome，或运行: "
         ".venv/bin/playwright install chromium\n"
+        f"原始错误: {last_error}"
+    )
+
+
+def launch_with_storage_state(
+    playwright: Playwright,
+    storage_state_path: Path,
+    *,
+    headless: bool = True,
+) -> tuple[Browser, BrowserContext]:
+    """Non-persistent context，从 storage_state.json 加载 cookies。
+    headless=False 可在本地有头模式运行（绕过反爬），headless=True 用于云端。
+    """
+    args = list(COMMON_ARGS) + (HEADLESS_ARGS if headless else HEADED_ARGS)
+    context_kwargs: dict[str, Any] = {
+        "storage_state": str(storage_state_path),
+        "locale": "zh-CN",
+        "timezone_id": "Asia/Shanghai",
+        "user_agent": USER_AGENT,
+        "viewport": None if not headless else {"width": 1280, "height": 900},
+        "color_scheme": "light",
+        "extra_http_headers": {"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8"},
+    }
+    launch_kwargs: dict[str, Any] = {
+        "headless": headless,
+        "args": args,
+        "ignore_default_args": ["--enable-automation"],
+    }
+
+    last_error: Exception | None = None
+    for channel in ("chrome", None):
+        try:
+            kwargs = dict(launch_kwargs)
+            if channel:
+                kwargs["channel"] = channel
+            browser = playwright.chromium.launch(**kwargs)
+            context = browser.new_context(**context_kwargs)
+            apply_stealth(context)
+            return browser, context
+        except Exception as e:
+            last_error = e
+            continue
+
+    raise RuntimeError(
+        "无法启动云端浏览器，请运行: playwright install chromium\n"
         f"原始错误: {last_error}"
     )

@@ -24,6 +24,7 @@ class Settings:
     ragforge_api_key: str = ""
     ragforge_enabled: bool = False
     http_proxy: str = ""
+    github_token: str = ""
 
     @property
     def search_url(self) -> str:
@@ -68,6 +69,8 @@ def load_settings(
 
     resolved_keyword = keyword or _str("KEYWORD", defaults.get("keyword", "Java后端"))
     resolved_city = city or _str("CITY", str(defaults.get("city", "101010100")))
+    if resolved_city and not resolved_city.isdigit():
+        resolved_city = cities.get(resolved_city, resolved_city)
     resolved_max_pages = max_pages if max_pages is not None else _int(
         "MAX_PAGES", int(defaults.get("max_pages", 3))
     )
@@ -83,6 +86,7 @@ def load_settings(
         "RAGFORGE_ENABLED", "false"
     ).lower() in ("1", "true", "yes")
     resolved_http_proxy = _str("HTTP_PROXY", "")
+    resolved_github_token = _str("GITHUB_TOKEN", "")
 
     data_dir = PROJECT_ROOT / _str("DATA_DIR", "data")
     storage_state = PROJECT_ROOT / _str(
@@ -102,4 +106,5 @@ def load_settings(
         ragforge_api_key=resolved_ragforge_api_key,
         ragforge_enabled=resolved_ragforge_enabled,
         http_proxy=resolved_http_proxy,
+        github_token=resolved_github_token,
     )
