@@ -15,9 +15,11 @@ from src.config import load_settings
 from src.exporter import JobExporter
 from src.pipeline.chunk_builder import (
     build_boss_jd,
+    build_boss_salary_market,
     build_github_repo,
     build_niuke_interview,
     build_niuke_salary,
+    build_prebuilt,
 )
 from src.pipeline.ragforge_client import RagForgeClient
 from src.scrapers.boss.scraper import JobScraper
@@ -36,6 +38,8 @@ PUSH_BUILDERS = {
     "boss": build_boss_jd,
     "niuke-interview": build_niuke_interview,
     "niuke-salary": build_niuke_salary,
+    "boss-salary": build_boss_salary_market,
+    "boss-company": build_prebuilt,
     "github": build_github_repo,
 }
 
@@ -43,6 +47,8 @@ PUSH_KB_CONFIG = {
     "boss": ("RAGFORGE_JD_KB_ID", "jd_kb_id"),
     "niuke-interview": ("RAGFORGE_INTERVIEW_KB_ID", "interview_kb_id"),
     "niuke-salary": ("RAGFORGE_SALARY_KB_ID", "salary_kb_id"),
+    "boss-salary": ("RAGFORGE_SALARY_KB_ID", "salary_kb_id"),
+    "boss-company": ("RAGFORGE_GITHUB_KB_ID", "github_kb_id"),
     "github": ("RAGFORGE_GITHUB_KB_ID", "github_kb_id"),
 }
 
@@ -169,9 +175,10 @@ def cmd_niuke_interview(args: argparse.Namespace) -> int:
     settings = load_settings()
     niuke_cfg = load_niuke_config()
     headless = _niuke_headless(args)
-    if not verify_niuke_login(headless=headless):
-        print("请先运行: python cli.py niuke-login", file=sys.stderr)
-        return 1
+    if not getattr(args, "no_login_check", False):
+        if not verify_niuke_login(headless=headless):
+            print("请先运行: python cli.py niuke-login", file=sys.stderr)
+            return 1
 
     max_pages = (
         args.max_pages
@@ -179,10 +186,12 @@ def cmd_niuke_interview(args: argparse.Namespace) -> int:
         else int(niuke_cfg.get("max_pages", 5))
     )
     scraper = NiukeInterviewScraper(settings)
+    max_records = args.max_records if args.max_records is not None else None
     try:
         records = scraper.scrape(
             company_id=args.company_id,
             max_pages=max_pages,
+            max_records=max_records,
         )
     except RuntimeError as e:
         print(f"错误: {e}", file=sys.stderr)
@@ -196,9 +205,10 @@ def cmd_niuke_salary(args: argparse.Namespace) -> int:
     settings = load_settings()
     niuke_cfg = load_niuke_config()
     headless = _niuke_headless(args)
-    if not verify_niuke_login(headless=headless):
-        print("请先运行: python cli.py niuke-login", file=sys.stderr)
-        return 1
+    if not getattr(args, "no_login_check", False):
+        if not verify_niuke_login(headless=headless):
+            print("请先运行: python cli.py niuke-login", file=sys.stderr)
+            return 1
 
     max_pages = (
         args.max_pages
@@ -206,8 +216,9 @@ def cmd_niuke_salary(args: argparse.Namespace) -> int:
         else int(niuke_cfg.get("max_pages", 5))
     )
     scraper = NiukeSalaryScraper(settings)
+    max_records = args.max_records if args.max_records is not None else None
     try:
-        records = scraper.scrape(max_pages=max_pages)
+        records = scraper.scrape(max_pages=max_pages, max_records=max_records)
     except RuntimeError as e:
         print(f"错误: {e}", file=sys.stderr)
         return 1
@@ -274,8 +285,12 @@ def _extract_document_id(response: dict) -> int | None:
 def _response_exists(response: dict) -> bool:
     if response.get("exists") is True:
         return True
+    if response.get("skipped") is True:
+        return True
     data = response.get("data")
     if isinstance(data, dict) and data.get("exists") is True:
+        return True
+    if isinstance(data, dict) and data.get("skipped") is True:
         return True
     return False
 
@@ -458,6 +473,17 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="无头模式",
     )
+    p_niuke_interview.add_argument(
+        "--max-records",
+        type=int,
+        default=None,
+        help="最多采集条数（用于测试）",
+    )
+    p_niuke_interview.add_argument(
+        "--no-login-check",
+        action="store_true",
+        help="跳过登录检测（已确认登录时使用）",
+    )
     p_niuke_interview.set_defaults(func=cmd_niuke_interview)
 
     p_niuke_salary = sub.add_parser("niuke-salary", help="抓取牛客薪资帖子")
@@ -472,13 +498,24 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="无头模式",
     )
+    p_niuke_salary.add_argument(
+        "--max-records",
+        type=int,
+        default=None,
+        help="最多采集条数（用于测试）",
+    )
+    p_niuke_salary.add_argument(
+        "--no-login-check",
+        action="store_true",
+        help="跳过登录检测（已确认登录时使用）",
+    )
     p_niuke_salary.set_defaults(func=cmd_niuke_salary)
 
     p_push = sub.add_parser("push", help="推送本地 JSONL 到 RAGForge")
     p_push.add_argument(
         "--source",
         required=True,
-        choices=["boss", "niuke-interview", "niuke-salary", "github"],
+        choices=["boss", "niuke-interview", "niuke-salary", "boss-salary", "boss-company", "github"],
         help="数据来源类型",
     )
     p_push.add_argument(

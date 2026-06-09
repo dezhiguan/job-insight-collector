@@ -176,6 +176,8 @@ def parse_interview_post(page: Page) -> dict:
     content = _first_visible_text(
         page,
         [
+            ".nc-slate-editor-content",
+            ".post-content-box",
             ".nc-post-content",
             ".discuss-main-content",
             ".post-topic-des",

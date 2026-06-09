@@ -116,6 +116,7 @@ class NiukeInterviewScraper:
         self,
         company_id: str | None = None,
         max_pages: int = 5,
+        max_records: int | None = None,
     ) -> list[dict]:
         records: list[dict] = []
         seen_post_ids: set[str] = set()
@@ -125,6 +126,8 @@ class NiukeInterviewScraper:
             list_page = context.pages[0] if context.pages else context.new_page()
 
             for page_num in range(1, max_pages + 1):
+                if max_records and len(records) >= max_records:
+                    break
                 url = build_interview_list_url(
                     company_id=company_id,
                     page_num=page_num,
@@ -135,6 +138,8 @@ class NiukeInterviewScraper:
 
                 post_ids = collect_post_ids(list_page)
                 for post_id in post_ids:
+                    if max_records and len(records) >= max_records:
+                        break
                     if post_id in seen_post_ids:
                         continue
                     seen_post_ids.add(post_id)
@@ -148,6 +153,13 @@ class NiukeInterviewScraper:
                             timeout=45_000,
                         )
                         check_login_required(detail_page)
+                        try:
+                            detail_page.wait_for_selector(
+                                ".nc-slate-editor-content",
+                                timeout=10_000,
+                            )
+                        except Exception:
+                            pass
                         record = parse_interview_post(detail_page)
                         if record.get("post_id"):
                             records.append(record)
