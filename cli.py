@@ -78,11 +78,27 @@ def cmd_scrape(args: argparse.Namespace) -> int:
         city=args.city,
         max_pages=args.max_pages,
         delay_ms=args.delay_ms,
-        headless=args.headless or None,  # False → None，让 env var HEADLESS 生效
+        headless=args.headless or None,
     )
     scraper = JobScraper(settings)
+    extra_kws = args.extra_keywords if args.extra_keywords else None
     try:
-        scraper.scrape(require_login=not args.no_login, max_jobs=args.max_jobs)
+        scraper.scrape(
+            require_login=not args.no_login,
+            max_jobs=args.max_jobs,
+            extra_keywords=extra_kws,
+        )
+    except (FileNotFoundError, RuntimeError) as e:
+        print(f"错误: {e}", file=sys.stderr)
+        return 1
+    return 0
+
+
+def cmd_retry(args: argparse.Namespace) -> int:
+    settings = load_settings()
+    scraper = JobScraper(settings)
+    try:
+        scraper.scrape_failed(require_login=True)
     except (FileNotFoundError, RuntimeError) as e:
         print(f"错误: {e}", file=sys.stderr)
         return 1
@@ -290,10 +306,15 @@ def cmd_push(args: argparse.Namespace) -> int:
 
     success = 0
     skipped = 0
+    discarded = 0
     failed = 0
 
     for idx, record in enumerate(records, start=1):
         filename, markdown = builder(record)
+        if filename is None:
+            discarded += 1
+            print(f"[{idx}/{total}] → 丢弃（数据不完整）")
+            continue
         try:
             response = client.upload_text(kb_id, filename, markdown)
         except httpx.HTTPError as e:
@@ -322,7 +343,7 @@ def cmd_push(args: argparse.Namespace) -> int:
         success += 1
         print(f"[{idx}/{total}] {filename} → document_id={doc_id} ({status})")
 
-    print(f"汇总: 成功 {success} 条，跳过（已存在）{skipped} 条，失败 {failed} 条")
+    print(f"汇总: 成功 {success} 条，跳过（已存在）{skipped} 条，丢弃（数据不完整）{discarded} 条，失败 {failed} 条")
     return 0 if failed == 0 else 1
 
 
@@ -407,7 +428,16 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="最多抓取职位数（用于快速验证）",
     )
+    p_scrape.add_argument(
+        "--extra-keywords",
+        nargs="+",
+        default=None,
+        help="额外搜索关键词（每个关键词补充最多15个新职位）",
+    )
     p_scrape.set_defaults(func=cmd_scrape)
+
+    p_retry = sub.add_parser("retry", help="重试 failed_ids.txt 中的失败职位")
+    p_retry.set_defaults(func=cmd_retry)
 
     p_niuke_login = sub.add_parser("niuke-login", help="打开牛客网登录页并等待手动登录")
     p_niuke_login.set_defaults(func=cmd_niuke_login)

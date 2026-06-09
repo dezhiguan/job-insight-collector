@@ -95,6 +95,7 @@ def launch_user_chrome(port: int = CDP_PORT) -> subprocess.Popen | None:
     args = [
         chrome,
         f"--remote-debugging-port={port}",
+        f"--remote-allow-origins=http://127.0.0.1:{port}",
         f"--user-data-dir={CDP_PROFILE_DIR}",
         "--no-first-run",
         "--no-default-browser-check",

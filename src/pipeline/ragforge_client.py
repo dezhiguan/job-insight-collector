@@ -12,7 +12,7 @@ class RagForgeClient:
         self.timeout = timeout
 
     def _headers(self) -> dict[str, str]:
-        return {"X-API-Key": self.api_key}
+        return {"X-API-Key": self.api_key, "Content-Type": "application/json"}
 
     def upload_text(
         self,
@@ -21,15 +21,18 @@ class RagForgeClient:
         content: str,
         overwrite: bool = False,
     ) -> dict:
-        content_bytes = content.encode("utf-8")
-        files = {"file": (filename, content_bytes, "text/markdown")}
-        params = {"overwrite": str(overwrite).lower()}
+        title = filename.removesuffix(".md")
+        payload = {
+            "kbId": kb_id,
+            "title": title,
+            "content": content,
+            "chunkType": "JD",
+        }
         with httpx.Client(timeout=self.timeout) as client:
             resp = client.post(
-                f"{self.base_url}/api/v1/kb/{kb_id}/documents",
+                f"{self.base_url}/api/v1/documents/text",
                 headers=self._headers(),
-                files=files,
-                params=params,
+                json=payload,
             )
             resp.raise_for_status()
             return resp.json()

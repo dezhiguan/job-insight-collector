@@ -14,21 +14,37 @@ def _join_list(items: list | None) -> str:
     return ", ".join(str(item).strip() for item in items if str(item).strip())
 
 
-def build_boss_jd(record: dict) -> tuple[str, str]:
-    job_id = str(record.get("job_id") or "")
-    filename = f"boss_jd_{job_id}.md"
+def _sanitize(text: str, max_len: int = 30) -> str:
+    """去除文件名非法字符，截断过长部分。字段缺失返回空字符串。"""
+    safe = "".join(c for c in text if c not in r'\/:*?"<>|').strip()
+    return safe[:max_len] if safe else ""
 
+
+def build_boss_jd(record: dict) -> tuple[str, str] | tuple[None, None]:
     job_title = record.get("job_title") or ""
     company_name = record.get("company_name") or ""
+    salary_desc = record.get("salary_desc") or ""
     city_name = record.get("city_name") or ""
     job_description = record.get("job_description") or ""
-    scraped_at = record.get("scraped_at") or ""
+
+    # 丢弃：职位和正文都为空，RAG 无价值
+    if not job_title.strip() and len(job_description.strip()) < 50:
+        return None, None
+
+    # 标题只拼接非空字段，跳过空值和分隔符
+    parts = [_sanitize(f) for f in [job_title, company_name, salary_desc, city_name] if f.strip()]
+    filename = "-".join(p for p in parts if p) + ".md" or "jd.md"
+
+    job_description = record.get("job_description") or ""
+    scraped_at = str(record.get("scraped_at") or "")
+    scraped_date = scraped_at[:10] if scraped_at else ""
 
     title = f"# {job_title} · {company_name} · {city_name}"
     meta_lines = [
         _meta_line("公司", company_name),
         _meta_line("城市", city_name),
-        _meta_line("薪资", record.get("salary_desc") or ""),
+        _meta_line("薪资", salary_desc),
+        _meta_line("发布时间", record.get("publish_time") or ""),
         _meta_line("经验", record.get("experience") or ""),
         _meta_line("学历", record.get("education") or ""),
         _meta_line("行业", record.get("industry") or ""),
@@ -39,6 +55,7 @@ def build_boss_jd(record: dict) -> tuple[str, str]:
         meta_lines.append(_meta_line("标签", labels))
 
     body_lines = [line for line in meta_lines if line]
+    footer = f"---\n采集时间：{scraped_date}" if scraped_date else "---"
     markdown = "\n".join(
         [
             title,
@@ -49,8 +66,7 @@ def build_boss_jd(record: dict) -> tuple[str, str]:
             "",
             job_description,
             "",
-            "---",
-            f"来源：Boss直聘 | 岗位ID：{job_id} | 采集时间：{scraped_at}",
+            footer,
         ]
     )
     return filename, markdown
