@@ -361,8 +361,8 @@ class JobScraper:
             version = _httpx.get("http://127.0.0.1:9222/json/version").json()
             browser_ws = version["webSocketDebuggerUrl"]
 
+            # 先通过 browser WebSocket 获取 target id（不 attach，避免残留 session 影响后续连接）
             async with _ws.connect(browser_ws, max_size=10_000_000) as bws:
-                # 找 zhipin.com page target
                 await bws.send(_json_mod.dumps({"id": 1, "method": "Target.getTargets"}))
                 resp = _json_mod.loads(await bws.recv())
                 targets = resp.get("result", {}).get("targetInfos", [])
@@ -373,16 +373,9 @@ class JobScraper:
                 )
                 if not page_target:
                     return {"code": -1, "message": "未找到 zhipin.com 标签"}
-
                 tid = page_target["targetId"]
-                await bws.send(_json_mod.dumps({
-                    "id": 2, "method": "Target.attachToTarget",
-                    "params": {"targetId": tid, "flatten": True},
-                }))
-                attach_resp = _json_mod.loads(await bws.recv())
-                session_id = attach_resp.get("result", {}).get("sessionId", "")
 
-            # 用 sessionId 在 target session 里执行 fetch
+            # 直接连接 page WebSocket，不用 Target.attachToTarget
             target_ws = f"ws://127.0.0.1:9222/devtools/page/{tid}"
             qs = "&".join(f"{k}={v}" for k, v in params.items())
             url_with_qs = f"{endpoint}?{qs}"
@@ -399,7 +392,6 @@ class JobScraper:
                     "id": 10, "method": "Runtime.evaluate",
                     "params": {"expression": js, "awaitPromise": True, "returnByValue": True},
                 }))
-                # 消耗事件直到拿到 id=10 的回复
                 for _ in range(30):
                     raw = await tws.recv()
                     msg = _json_mod.loads(raw)
@@ -420,13 +412,15 @@ class JobScraper:
             detail_url += f"?securityId={security_id}"
 
         JS_EXTRACT = """(() => {
-            const descSels = ['.job-sec-text','.job-detail-section .job-sec-text',
-                              '.job-sec .job-sec-text','[class*="sec-text"]'];
+            // 用 querySelectorAll 取所有段落，拼接完整 JD（工作职责 + 任职资格 等）
+            const descSels = ['.job-sec-text', '[class*="sec-text"]'];
             let desc = '';
             for (const s of descSels) {
-                const el = document.querySelector(s);
-                const t = el && (el.innerText || '').trim();
-                if (t && t.length > 30) { desc = t; break; }
+                const els = document.querySelectorAll(s);
+                if (els.length) {
+                    const parts = Array.from(els).map(el => (el.innerText || '').trim()).filter(t => t.length > 10);
+                    if (parts.length) { desc = parts.join('\\n\\n'); break; }
+                }
             }
 
             // 1. JSON-LD 结构化数据里的 upDate
@@ -501,8 +495,11 @@ class JobScraper:
                 await tws.send(_json_mod.dumps({"id": 19, "method": "Page.enable"}))
                 # 消耗 Page.enable 的回复
                 for _ in range(5):
-                    raw = await asyncio.wait_for(tws.recv(), timeout=2.0)
-                    if _json_mod.loads(raw).get("id") == 19:
+                    try:
+                        raw = await asyncio.wait_for(tws.recv(), timeout=2.0)
+                        if _json_mod.loads(raw).get("id") == 19:
+                            break
+                    except asyncio.TimeoutError:
                         break
 
                 # 导航到详情页
@@ -511,7 +508,7 @@ class JobScraper:
                     "params": {"url": detail_url},
                 }))
 
-                # 等待 domContentEventFired 或 loadEventFired
+                # 等待 domContentEventFired（loadEventFired 不总触发）
                 for _ in range(60):
                     try:
                         raw = await asyncio.wait_for(tws.recv(), timeout=2.0)
@@ -519,12 +516,15 @@ class JobScraper:
                         break
                     msg = _json_mod.loads(raw)
                     method = msg.get("method", "")
-                    if method in ("Page.domContentEventFired", "Page.loadEventFired"):
+                    if method == "Page.domContentEventFired":
+                        break
+                    if method == "Page.loadEventFired":
                         break
                     if msg.get("id") == 20 and "error" in msg:
                         return None
 
-                await asyncio.sleep(0.8)
+                # Boss JD 由 JS 异步渲染，DOMContentLoaded 后需等 2 秒让内容完全注入
+                await asyncio.sleep(2.0)
 
                 # 提取内容
                 await tws.send(_json_mod.dumps({
@@ -545,7 +545,8 @@ class JobScraper:
 
         try:
             return asyncio.run(_run())
-        except Exception:
+        except Exception as e:
+            print(f"  _cdp_fetch_detail error: {e}")
             return None
 
     def _collect_jobs_via_cdp(

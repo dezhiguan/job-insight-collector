@@ -40,6 +40,7 @@ PUSH_BUILDERS = {
     "niuke-salary": build_niuke_salary,
     "boss-salary": build_boss_salary_market,
     "boss-company": build_prebuilt,
+    "github-interview": build_prebuilt,
     "github": build_github_repo,
 }
 
@@ -49,6 +50,7 @@ PUSH_KB_CONFIG = {
     "niuke-salary": ("RAGFORGE_SALARY_KB_ID", "salary_kb_id"),
     "boss-salary": ("RAGFORGE_SALARY_KB_ID", "salary_kb_id"),
     "boss-company": ("RAGFORGE_GITHUB_KB_ID", "github_kb_id"),
+    "github-interview": ("RAGFORGE_INTERVIEW_KB_ID", "interview_kb_id"),
     "github": ("RAGFORGE_GITHUB_KB_ID", "github_kb_id"),
 }
 
@@ -515,7 +517,7 @@ def main(argv: list[str] | None = None) -> int:
     p_push.add_argument(
         "--source",
         required=True,
-        choices=["boss", "niuke-interview", "niuke-salary", "boss-salary", "boss-company", "github"],
+        choices=["boss", "niuke-interview", "niuke-salary", "boss-salary", "boss-company", "github-interview", "github"],
         help="数据来源类型",
     )
     p_push.add_argument(
